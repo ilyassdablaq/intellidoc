@@ -1,0 +1,324 @@
+/**
+ * Diese Datei initialisiert und konfiguriert den Server, einschließlich Middleware, Routen, Datenbankverbindungen und Sicherheitskonfigurationen für eine vollständige Backend-Anwendung.
+ * 
+ * @file app.js - Express Server Hauptanwendung
+ * @author Farah, Ayoub, Luca, Miray, Ilyass, Lennart
+ * @copyright 2024
+ * @requires cors
+ * @requires express
+ * @requires body-parser
+ * @requires path
+ * @requires express-session
+ * @requires ./sequelize.config
+ */
+
+const cors = require("cors");
+const express = require("express");
+const app = express();
+const bodyParser = require("body-parser");
+const path = require("path");
+const fs = require("fs");
+const session = require("express-session");
+const sequelize = require("./sequelize.config.js");
+
+// Import routes
+const authRoutes = require('./backend/routes/authRoutes');
+const docUploadRoutes = require("./backend/routes/docUploadRoutes");
+const foldersRoutes = require("./backend/routes/foldersRoutes");
+const semanticSearchRoutes = require('./backend/routes/semanticSearchRoutes');
+const adminRoutes = require('./backend/routes/adminRoutes');
+const passwordResetRoutes = require('./backend/models/passwordReset');
+const {registerUser, verifyUserCode} = require ('./backend/models/userRegistrationToDB.js');
+const monitorRoutes = require('./backend/routes/monitorRoutes.js');
+
+// Import models
+const User = require("./database/User");
+const Folder = require("./database/Folder");
+const File = require("./database/File");
+const UserRole = require("./database/UserRole");
+const UserRoleMapping = require("./database/UserRoleMapping");
+
+const PORT = process.env.PORT || 3000;
+const isProduction = process.env.NODE_ENV === "production";
+
+const allowedOrigins = (process.env.CORS_ORIGINS || "http://localhost:5173,http://127.0.0.1:5173")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+/**
+ * CORS-Konfiguration
+ * @name CORSConfiguration
+ * @memberof module:middleware
+ * @property {string} origin - Erlaubte Origin für CORS
+ * @property {string[]} methods - Erlaubte HTTP-Methoden
+ * @property {boolean} credentials - Erlaubt Credentials in CORS-Requests
+ */
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+        return;
+      }
+      callback(new Error("Origin not allowed by CORS"));
+    },
+    methods: ["POST", "PUT", "GET", "DELETE", "OPTIONS", "HEAD"],
+    credentials: true,
+  })
+);
+
+// Basic security headers
+app.use((req, res, next) => {
+  res.setHeader(
+    'Content-Security-Policy',
+    "default-src 'self'; style-src 'self' 'unsafe-inline' fonts.googleapis.com; font-src 'self' fonts.gstatic.com; img-src 'self' data: blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval'; connect-src 'self' localhost:* ws://localhost:*"
+  );
+  next();
+});
+
+/**
+ * Body-Parser Konfiguration für JSON-Verarbeitung
+ * @name BodyParserConfiguration
+ * @memberof module:middleware
+ */
+app.use(express.json());
+app.set("trust proxy", 1);
+
+/**
+ * Session-Konfiguration für Express
+ * @name SessionConfiguration
+ * @memberof module:middleware
+ * @property {string} name - Name der Session-ID
+ * @property {string} secret - Geheimer Schlüssel für Session-Verschlüsselung
+ * @property {boolean} resave - Verhindert das Neu-Speichern unmodifizierter Sessions
+ * @property {boolean} saveUninitialized - Verhindert Speichern nicht initialisierter Sessions
+ * @property {Object} cookie - Cookie-Konfigurationen
+ */
+app.use(
+  session({
+    name: "userId",
+    secret: process.env.SESSION_SECRET || "your_secret_key",
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      sameSite: isProduction ? "none" : false,
+      secure: isProduction,
+      httpOnly: true,
+      maxAge: 24 * 60 * 60 * 1000,
+    },
+  })
+);
+
+app.get("/healthz", (req, res) => {
+  res.status(200).json({ status: "ok" });
+});
+
+/**
+ * Modell-Beziehungsdefinitionen
+ * @namespace ModelRelationships
+ * @description Definiert die Beziehungen zwischen den Datenbank-Modellen
+ * @property {Object} User.hasMany.Folder - Ein-zu-viele Beziehung zwischen User und Folder
+ * @property {Object} Folder.belongsTo.User - Viele-zu-eins Beziehung zwischen Folder und User
+ * @property {Object} Folder.hasMany.Folder - Selbstreferenzierende Beziehung für Unterordner
+ * @property {Object} User.hasMany.File - Ein-zu-viele Beziehung zwischen User und File
+ * @property {Object} Folder.hasMany.File - Ein-zu-viele Beziehung zwischen Folder und File
+ * @property {Object} UserRoleMapping - Verknüpfungstabelle zwischen User und UserRole
+ * 
+ * Datenbank-Initialisierung und Beziehungsdefinition zwischen Models
+ * @name DatabaseSetup
+ * @async
+ * @function
+ * @throws {Error} Wenn die Datenbankverbindung oder Synchronisation fehlschlägt
+ */
+(async () => {
+  try {
+    await sequelize.authenticate();
+    console.log("Database connection successful.");
+
+    // Define Model Relationships
+    User.hasMany(Folder, { foreignKey: "user_id", onDelete: "CASCADE" });
+    Folder.belongsTo(User, { foreignKey: "user_id" });
+
+    Folder.hasMany(Folder, { foreignKey: "parent_folder_id", as: "subfolders", onDelete: "SET NULL" });
+    Folder.belongsTo(Folder, { foreignKey: "parent_folder_id", as: "parentFolder" });
+
+    User.hasMany(File, { foreignKey: "user_id", onDelete: "CASCADE" });
+    File.belongsTo(User, { foreignKey: "user_id" });
+
+    Folder.hasMany(File, { foreignKey: "folder_id", onDelete: "SET NULL" });
+    File.belongsTo(Folder, { foreignKey: "folder_id" });
+
+    UserRoleMapping.belongsTo(User, { foreignKey: "user_id" });
+    UserRoleMapping.belongsTo(UserRole, { foreignKey: "role_id" });
+    
+    User.belongsToMany(UserRole, { through: UserRoleMapping, foreignKey: "user_id" });
+    UserRole.belongsToMany(User, { through: UserRoleMapping, foreignKey: "role_id" });
+
+    await sequelize.sync();
+    console.log("Database synchronization successful.");
+  } catch (error) {
+    console.error("Database error:", error);
+  }
+})();
+
+/**
+ * Authentifizierungs-Middleware zur Überprüfung der Benutzeranmeldung
+ * @function authenticateMiddleware
+ * @param {express.Request} req - Express Request Objekt
+ * @param {express.Response} res - Express Response Objekt
+ * @param {express.NextFunction} next - Express Next Middleware Funktion
+ * @returns {void}
+ */
+const authenticateMiddleware = (req, res, next) => {
+  if (req.session.userId) {
+    next();
+  } else {
+    res.status(401).json({ message: "Unauthorized: Please log in" });
+  }
+};
+
+/**
+ * Route zum Abrufen des Admin-Status
+ * @name get/api/admin/status
+ * @function
+ * @memberof module:routes
+ * @param {express.Request} req - Express Request Objekt
+ * @param {express.Response} res - Express Response Objekt
+ */
+app.get("/api/admin/status", (req, res) => {
+  if (req.session.isAdmin) {
+    res.json({ isAdmin: true });
+  } else {
+    res.json({ isAdmin: false });
+  }
+});
+
+/**
+ * Route zum Abrufen der aktuellen Benutzerinformationen
+ * @name get/api/current-user
+ * @function
+ * @param {express.Request} req - Express Request Objekt
+ * @param {express.Response} res - Express Response Objekt
+ * @returns {Object} Objekt mit userId und isAdmin Status
+ */
+app.get("/api/current-user", authenticateMiddleware, (req, res) => {
+  res.json({
+    userId: req.session.userId,
+    isAdmin: req.session.isAdmin || false,
+  });
+});
+
+/**
+ * Registrierungsroute für neue Benutzer
+ * @name post/register
+ * @function
+ * @async
+ * @param {express.Request} req - Express Request Objekt mit username, email und password im Body
+ * @param {express.Response} res - Express Response Objekt
+ * @throws {Error} Wenn die Registrierung fehlschlägt
+ */
+app.post("/register", async (req, res) => {
+  console.log("Received registration request:", req.body);
+  const { username, email, password } = req.body;
+
+  try {
+    const userId = await registerUser(username, email, password);
+    console.log("User registered successfully:", userId);
+    res.status(201).json({
+      message: "User registered successfully. Please log in.",
+      userId,
+    });
+  } catch (error) {
+    console.error("Error registering user:", error);
+    if (
+      error.message === 'Username, email, and password are required' ||
+      error.message.startsWith('Password must be at least 8 characters long')
+    ) {
+      return res.status(400).json({ message: error.message });
+    }
+    if (error.message === "Username or email already exists") {
+      res.status(400).json({ message: error.message });
+    } else if (error.message === "Failed to insert user: No ID returned") {
+      res.status(500).json({
+        message:
+          "User was created but an error occurred. Please contact support.",
+      });
+    } else {
+      res.status(500).json({
+        message: "An unexpected error occurred. Please try again later.",
+      });
+    }
+  }
+});
+
+/**
+ * Verifizierungsroute für Benutzer-Codes
+ * @name post/api/verify-code
+ * @function
+ * @async
+ * @param {express.Request} req - Express Request Objekt mit email und verificationCode im Body
+ * @param {express.Response} res - Express Response Objekt
+ * @throws {Error} Wenn die Verifizierung fehlschlägt
+ */
+app.post('/api/verify-code', async (req, res) => {
+    const { email, verificationCode } = req.body;
+
+    if (!email || !verificationCode) {
+        return res.status(400).json({ message: 'Email und verification key sind notwendig' });
+    }
+
+    try {
+        const result = await verifyUserCode(email, verificationCode);
+
+        if (result.success) {
+            res.status(200).json({ message: result.message });
+        } else {
+            res.status(400).json({ message: result.message });
+        }
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'An error occurred during verification' });
+    }
+});
+
+// Route Middleware
+app.use('/auth', authRoutes);
+app.use('/api/admin', adminRoutes);
+app.use("/docupload", authenticateMiddleware, docUploadRoutes);
+app.use("/folders", authenticateMiddleware, foldersRoutes);
+app.use("/search", authenticateMiddleware, semanticSearchRoutes);
+app.use("/passwordReset", passwordResetRoutes);
+app.use('/monitor', monitorRoutes);
+
+app.use(express.static(path.join(__dirname, "frontend", "dist")));
+
+/**
+ * Catch-all Route für Client-seitiges Routing
+ * @name get/*
+ * @function
+ * @param {express.Request} req - Express Request Objekt
+ * @param {express.Response} res - Express Response Objekt
+ */
+app.get("*", (req, res) => {
+  console.log(`Catch-All Route hit: ${req.url}`);
+  const indexPath = path.join(__dirname, "frontend", "dist", "index.html");
+
+  if (!fs.existsSync(indexPath)) {
+    res.status(404).json({ message: "Frontend bundle not found. API is running." });
+    return;
+  }
+
+  res.sendFile(indexPath);
+});
+
+/**
+ * Server-Start Konfiguration
+ * @name ServerStart
+ * @function
+ * @param {number} PORT - Der Port auf dem der Server läuft
+ * @listens {number} PORT
+ */
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
