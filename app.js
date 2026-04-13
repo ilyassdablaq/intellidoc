@@ -19,6 +19,7 @@ const bodyParser = require("body-parser");
 const path = require("path");
 const fs = require("fs");
 const session = require("express-session");
+require("dotenv").config();
 const sequelize = require("./sequelize.config.js");
 
 // Import routes
@@ -40,6 +41,7 @@ const UserRoleMapping = require("./database/UserRoleMapping");
 
 const PORT = process.env.PORT || 3000;
 const isProduction = process.env.NODE_ENV === "production";
+const shouldBootstrapDatabase = process.env.DB_BOOTSTRAP !== "false";
 
 const allowedOrigins = (process.env.CORS_ORIGINS || "http://localhost:5173,http://127.0.0.1:5173")
   .split(",")
@@ -133,30 +135,50 @@ app.get("/healthz", (req, res) => {
  */
 (async () => {
   try {
-    await sequelize.authenticate();
-    console.log("Database connection successful.");
+    if (shouldBootstrapDatabase) {
+      await sequelize.authenticate();
+      console.log("Database connection successful.");
 
-    // Define Model Relationships
-    User.hasMany(Folder, { foreignKey: "user_id", onDelete: "CASCADE" });
-    Folder.belongsTo(User, { foreignKey: "user_id" });
+      await sequelize.query('CREATE SCHEMA IF NOT EXISTS main;');
+      let vectorExtensionAvailable = true;
 
-    Folder.hasMany(Folder, { foreignKey: "parent_folder_id", as: "subfolders", onDelete: "SET NULL" });
-    Folder.belongsTo(Folder, { foreignKey: "parent_folder_id", as: "parentFolder" });
+      try {
+        await sequelize.query('CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA main;');
+      } catch (extensionError) {
+        vectorExtensionAvailable = false;
+        console.warn('pgvector extension is not available locally. Bootstrapping auth tables only.', extensionError.message);
+      }
 
-    User.hasMany(File, { foreignKey: "user_id", onDelete: "CASCADE" });
-    File.belongsTo(User, { foreignKey: "user_id" });
+      UserRoleMapping.belongsTo(User, { foreignKey: "user_id" });
+      UserRoleMapping.belongsTo(UserRole, { foreignKey: "role_id" });
+      User.belongsToMany(UserRole, { through: UserRoleMapping, foreignKey: "user_id" });
+      UserRole.belongsToMany(User, { through: UserRoleMapping, foreignKey: "role_id" });
 
-    Folder.hasMany(File, { foreignKey: "folder_id", onDelete: "SET NULL" });
-    File.belongsTo(Folder, { foreignKey: "folder_id" });
+      await User.sync();
+      await UserRole.sync();
+      await UserRoleMapping.sync();
 
-    UserRoleMapping.belongsTo(User, { foreignKey: "user_id" });
-    UserRoleMapping.belongsTo(UserRole, { foreignKey: "role_id" });
-    
-    User.belongsToMany(UserRole, { through: UserRoleMapping, foreignKey: "user_id" });
-    UserRole.belongsToMany(User, { through: UserRoleMapping, foreignKey: "role_id" });
+      if (vectorExtensionAvailable) {
+        User.hasMany(Folder, { foreignKey: "user_id", onDelete: "CASCADE" });
+        Folder.belongsTo(User, { foreignKey: "user_id" });
 
-    await sequelize.sync();
-    console.log("Database synchronization successful.");
+        Folder.hasMany(Folder, { foreignKey: "parent_folder_id", as: "subfolders", onDelete: "SET NULL" });
+        Folder.belongsTo(Folder, { foreignKey: "parent_folder_id", as: "parentFolder" });
+
+        User.hasMany(File, { foreignKey: "user_id", onDelete: "CASCADE" });
+        File.belongsTo(User, { foreignKey: "user_id" });
+
+        Folder.hasMany(File, { foreignKey: "folder_id", onDelete: "SET NULL" });
+        File.belongsTo(Folder, { foreignKey: "folder_id" });
+
+        await Folder.sync();
+        await File.sync();
+      }
+
+      console.log("Database synchronization successful.");
+    } else {
+      console.warn("Database bootstrap is disabled (DB_BOOTSTRAP=false). Starting API without boot-time DB validation.");
+    }
   } catch (error) {
     console.error("Database error:", error);
   }
@@ -284,6 +306,7 @@ app.post('/api/verify-code', async (req, res) => {
 
 // Route Middleware
 app.use('/auth', authRoutes);
+app.use('/', authRoutes);
 app.use('/api/admin', adminRoutes);
 app.use("/docupload", authenticateMiddleware, docUploadRoutes);
 app.use("/folders", authenticateMiddleware, foldersRoutes);

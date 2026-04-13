@@ -5,6 +5,7 @@
  * @requires child_process
  */
 
+require('dotenv').config();
 const { Pool } = require('pg');
 const { execSync } = require('child_process');
 

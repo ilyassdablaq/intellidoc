@@ -4,6 +4,7 @@
  * @author Miray
  */
 
+require('dotenv').config();
 const { Sequelize } = require("sequelize");
 const { dbConfig } = require("./ConnectPostgres");
 

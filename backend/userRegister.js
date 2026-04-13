@@ -78,7 +78,8 @@ router.post('/', async (req, res) => {
             email,
             password_hash: hashedPassword,
             verification_key: verificationKey,
-            is_verified: false
+            is_verified: false,
+            registered_at: new Date()
         });
 
         await sendVerificationEmail(email, verificationKey);

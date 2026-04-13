@@ -63,7 +63,7 @@ const registerUser = async (user_name, email, password_hash) => {
 
 
         // Query zum Einfügen des neuen Benutzers in die Datenbank
-        const query = 'INSERT INTO main.users (user_name, email, password_hash, verification_Key) VALUES ($1, $2, $3, $4) RETURNING user_id';
+        const query = 'INSERT INTO main.users (user_name, email, password_hash, verification_Key, registered_at) VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP) RETURNING user_id';
         const values = [user_name, email, hashedPassword, verification_Key];
 
 
