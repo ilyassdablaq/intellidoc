@@ -16,6 +16,11 @@ services:
       - key: CORS_ORIGINS
         sync: false
       - key: DATABASE_URL
-        sync: false
+        fromDatabase:
+          name: intellidoc-db
+          property: connectionString
       - key: DB_SSL
         value: "true"
+databases:
+  - name: intellidoc-db
+    plan: starter
